@@ -1,0 +1,75 @@
+{
+  "population": {
+    "description": "人口",
+    "type": "int",
+    "hint": "多重人格的人口数量，默认为1，最大为3",
+    "default": 2,
+    "minimum": 2,
+    "maximum": 3
+  },
+  "user_name": {
+    "description": "用户名字",
+    "type": "string",
+    "hint": "LLM称呼用户的名字",
+    "default": ""
+  },
+  "role": {
+    "description": "角色",
+    "type": "string",
+    "hint": "多重人格作为用户还是助手，默认为用户",
+    "default": "user",
+    "options": [
+      "user",
+      "assistant"
+    ]
+  },
+  "mode": {
+    "description": "模式",
+    "type": "string",
+    "hint": "多重人格的切换模式，默认为自动切换",
+    "default": "switch",
+    "options": [
+      "switch",
+      "manual"
+    ]
+  },
+  "persona1": {
+    "description": "人格1",
+    "hint": "多重人格的第一个",
+    "type": "string",
+    "default": "",
+    "_special": "select_persona"
+  },
+  "name1": {
+    "description": "人格1的名字",
+    "type": "string",
+    "hint": "多重人格的第一个的人格名字",
+    "default": ""
+  },
+  "persona2": {
+    "description": "人格2",
+    "type": "string",
+    "hint": "多重人格的第二个",
+    "default": "",
+    "_special": "select_persona"
+  },
+  "name2": {
+    "description": "人格2的名字",
+    "type": "string",
+    "hint": "多重人格的第二个人格名字",
+    "default": ""
+  },
+  "persona3": {
+    "description": "人格3",
+    "type": "string",
+    "hint": "多重人格的第三个",
+    "default": "",
+    "_special": "select_persona"
+  },
+  "name3": {
+    "description": "人格3的名字",
+    "type": "string",
+    "hint": "多重人格的第三个人格名字",
+    "default": ""
+  }
+}
