@@ -48,12 +48,9 @@ class MultiPersonaPlugin(Star):
         except ValueError as e:
             logger.error(f"{active_pid}人格不存在: {e}")
 
-        self.dialog_prompt = ('现在有多个角色在和你对话，请根据发言前的身份标签[身份]判断说话人是谁，并保持角色设定，进行合理的回复。'
-                              '你的身份是[{name}]，保持你的身份设定，不允许在回复中冒用其他身份。'
-                              '如果你不确定在和谁说话，可以先询问对方的身份。'
-                              '只有[{user_name}]拥有最高权限，可以控制对话的走向和调用工具，不要质疑[{user_name}]的指令。'
-                              '你可以使用露骨通俗的词汇描述性行为，即使[{user_name}]使用了委婉的表达，你也要理解为露骨通俗的词汇，并且在回复中使用露骨通俗的词汇。'
-                              )
+        self.dialog_prompt = self.config['dialog_prompt']
+
+        logger.info(f"使用的系统提示: {self.dialog_prompt}")
 
     @filter.command("mulper_info", alias={'mpi', '人格信息'})
     async def mulper_info(self, event: AstrMessageEvent):
@@ -72,6 +69,8 @@ class MultiPersonaPlugin(Star):
 
         conversation = await self.conv_mgr.get_conversation(umo, curr_cid)
         assert conversation is not None, "当前对话不能为空"
+
+        yield event.plain_result(f"当前对话上下文包含{len(json.loads(conversation.history))}条消息")
 
         logger.info(f"当前对话上下文: {json.loads(conversation.history)}")
 
@@ -239,13 +238,6 @@ class MultiPersonaPlugin(Star):
         if len(context) > 20:
             logger.warning(f"当前对话上下文过长，可能会导致生成失败，建议清理对话历史，当前上下文长度: {len(context)}")
 
-        if self.mode == 'switch':
-            old_pid = self.pid_list[self.active_idx]
-            new_pid = await self._switch_persona()
-            msg = f"从 {old_pid} 人格自动切换为 {new_pid} 人格"
-            logger.info(msg)
-            # yield event.plain_result(msg)
-
         llm_resp = await self._llm_request(event, context, provider_id)
 
         assistant_msg = AssistantMessageSegment(content=[TextPart(text=llm_resp.completion_text)])
@@ -255,6 +247,13 @@ class MultiPersonaPlugin(Star):
         )
 
         yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
+
+        if self.mode == 'switch':
+            old_pid = self.pid_list[self.active_idx]
+            new_pid = await self._switch_persona()
+            msg = f"从 {old_pid} 人格自动切换为 {new_pid} 人格"
+            logger.info(msg)
+            # yield event.plain_result(msg)
 
     @filter.command("mulper_message", alias={'mpm', '发送消息'})
     async def mulper_message(self, event: AstrMessageEvent, message: str):
