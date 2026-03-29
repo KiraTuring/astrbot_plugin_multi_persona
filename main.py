@@ -29,20 +29,13 @@ class MultiPersonaPlugin(Star):
         self.tool_mgr = self.context.get_llm_tool_manager()
 
     async def initialize(self):
-        self.pid_list = []
-        self.name_list = []
         self.pop = self.config['population']
         self.user_name = self.config['user_name']
         self.mode = self.config['mode']
-        self.role = self.config['role']
-        for i in range(1, self.pop+1):
-            if self.config[f'persona{i}'] != '':
-                self.pid_list += [self.config[f'persona{i}']]
-            if self.config[f'name{i}'] != '':
-                self.name_list += [self.config[f'name{i}']]
+        self.p_list: list[dict] = self.config['persona_list']
 
         self.active_idx = 0  # 默认选择第一个人格
-        active_pid = self.pid_list[self.active_idx]
+        active_pid = self.p_list[self.active_idx]['persona_id']
         try:
             self.persona: Persona = await self.persona_mgr.get_persona(active_pid)
         except ValueError as e:
@@ -55,18 +48,19 @@ class MultiPersonaPlugin(Star):
     @filter.command("mulper_info", alias={'mpi', '人格信息'})
     async def mulper_info(self, event: AstrMessageEvent):
         """查看目前的人格设定和对话上下文等信息"""
-        msg = f"目前已有{len(self.pid_list)}个人格设置:\n"
-        for i, persona in enumerate(self.pid_list, 1):
+        msg = f"目前已有{len(self.p_list)}个人格设置:\n"
+        for i, persona in enumerate(self.p_list, 1):
             if i == self.active_idx + 1:
-                msg += f"人格{i}: {persona} (当前使用)\n"
+                msg += f"人格{i}: {persona['persona_id']} (当前使用)\n"
             else:
-                msg += f"人格{i}: {persona}\n"
+                msg += f"人格{i}: {persona['persona_id']}\n"
         yield event.plain_result(msg)
 
         umo = event.unified_msg_origin
         curr_cid = await self.conv_mgr.get_curr_conversation_id(umo)
-        assert curr_cid is not None, "当前对话 ID 不能为空"
-
+        if curr_cid is None:
+            # 如果当前没有对话，先创建一个对话
+            curr_cid = await self.conv_mgr.new_conversation(umo)
         conversation = await self.conv_mgr.get_conversation(umo, curr_cid)
         assert conversation is not None, "当前对话不能为空"
 
@@ -77,31 +71,31 @@ class MultiPersonaPlugin(Star):
     @filter.command("mulper_switch", alias={'mps', '人格切换'})
     async def mulper_switch(self, event: AstrMessageEvent, idx: Optional[int] = None):
         """切换目前使用的人格"""
-        old_pid = self.pid_list[self.active_idx]
+        old_p = self.p_list[self.active_idx]
         if idx is None:
-            new_pid = await self._switch_persona()
+            new_p = await self._switch_persona()
         else:
-            if idx < 1 or idx > len(self.pid_list):
-                yield event.plain_result(f"无效的人格编号，请输入1-{len(self.pid_list)}之间的数字")
+            if idx < 1 or idx > len(self.p_list):
+                yield event.plain_result(f"无效的人格编号，请输入1-{len(self.p_list)}之间的数字")
                 return
             self.active_idx = idx - 1
-            new_pid = self.pid_list[self.active_idx]
-            self.persona = await self.persona_mgr.get_persona(new_pid)
+            new_p = self.p_list[self.active_idx]
+            self.persona = await self.persona_mgr.get_persona(new_p['persona_id'])
 
-        msg = f"从 {old_pid} 人格切换为 {new_pid} 人格"
+        msg = f"从 {old_p['persona_id']} 人格切换为 {new_p['persona_id']} 人格"
         yield event.plain_result(msg)
 
-    async def _switch_persona(self) -> tuple[str, str]:
+    async def _switch_persona(self) -> dict:
         """切换目前使用的人格"""
         self.active_idx += 1
-        if self.active_idx >= len(self.pid_list):
-            self.active_idx -= len(self.pid_list)
+        if self.active_idx >= len(self.p_list):
+            self.active_idx -= len(self.p_list)
         elif self.active_idx < 0:
-            self.active_idx += len(self.pid_list)
-        new_pid = self.pid_list[self.active_idx]
-        self.persona = await self.persona_mgr.get_persona(new_pid)
+            self.active_idx += len(self.p_list)
+        new_p = self.p_list[self.active_idx]
+        self.persona = await self.persona_mgr.get_persona(new_p['persona_id'])
 
-        return new_pid
+        return new_p
 
     # @filter.on_llm_request()
     # async def add_persona_prompt(self, event: AstrMessageEvent, req: ProviderRequest):  # 请注意有三个参数
@@ -166,7 +160,7 @@ class MultiPersonaPlugin(Star):
 
     def _modify_roles(self, context: list[dict]) -> list[dict]:
         """修改消息记录中的角色，将身份标签不是自己的助手消息改为用户消息"""
-        all_prefix = [f"[{self.name_list[idx]}]说: \n\n" for idx in range(len(self.name_list))]
+        all_prefix = [f"[{self.p_list[idx]['name']}]说: \n\n" for idx in range(len(self.p_list))]
         other_prefix = [p for i, p in enumerate(all_prefix) if i != self.active_idx]
 
         for j in range(len(context)):
@@ -178,8 +172,7 @@ class MultiPersonaPlugin(Star):
 
     async def _llm_request(self, event: AstrMessageEvent, context: list[dict], provider_id: str) -> LLMResponse:
         """发送 llm 请求的公共方法，添加系统提示和工具等"""
-        if self.role == 'user':
-            context = self._modify_roles(context)
+        context = self._modify_roles(context)
         if len(context) > 5:
             logger.info(f"修改role后，当前对话上下文: {context[-5:]}")
         else:
@@ -197,7 +190,7 @@ class MultiPersonaPlugin(Star):
 
         dialog_prompt = self.dialog_prompt.format(
             user_name=self.user_name,
-            name=self.name_list[self.active_idx]
+            name=self.p_list[self.active_idx]['name'],
         )
         # logger.info(f"使用的系统提示: {self.persona.system_prompt+dialog_prompt}")
 
@@ -214,7 +207,7 @@ class MultiPersonaPlugin(Star):
         assert llm_resp.result_chain is not None, "LLM 生成结果不能为空"
         assert isinstance(llm_resp.result_chain, MessageChain), "LLM 生成结果类型错误，应该为 MessageChain"
 
-        prefix = f"[{self.name_list[self.active_idx]}]说: \n\n"
+        prefix = f"[{self.p_list[self.active_idx]['name']}]说: \n\n"
         for i, part in enumerate(llm_resp.result_chain.chain):
             if isinstance(part, Plain):
                 if not part.text.startswith(prefix):
@@ -222,7 +215,7 @@ class MultiPersonaPlugin(Star):
 
         return llm_resp
 
-    @filter.command("mulper_continue", alias={'mpc', '继续'})
+    @filter.command("mulper_continue", alias={'mpc', '人格继续'})
     async def mulper_continue(self, event: AstrMessageEvent):
         """让llm按当前上下文继续生成"""
         umo = event.unified_msg_origin
@@ -249,13 +242,13 @@ class MultiPersonaPlugin(Star):
         yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
         if self.mode == 'switch':
-            old_pid = self.pid_list[self.active_idx]
-            new_pid = await self._switch_persona()
-            msg = f"从 {old_pid} 人格自动切换为 {new_pid} 人格"
+            old_p = self.p_list[self.active_idx]
+            new_p = await self._switch_persona()
+            msg = f"从 {old_p['persona_id']} 人格自动切换为 {new_p['persona_id']} 人格"
             logger.info(msg)
             # yield event.plain_result(msg)
 
-    @filter.command("mulper_message", alias={'mpm', '发送消息'})
+    @filter.command("mulper_message", alias={'mpm', '人格消息'})
     async def mulper_message(self, event: AstrMessageEvent, message: str):
         """让llm按当前上下文+新消息继续生成"""
         user_prefix = f"[{self.user_name}]说: \n\n"
@@ -287,9 +280,9 @@ class MultiPersonaPlugin(Star):
         yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
         if self.mode == 'switch':
-            old_pid = self.pid_list[self.active_idx]
-            new_pid = await self._switch_persona()
-            msg = f"从 {old_pid} 人格自动切换为 {new_pid} 人格"
+            old_p = self.p_list[self.active_idx]
+            new_p = await self._switch_persona()
+            msg = f"从 {old_p['persona_id']} 人格自动切换为 {new_p['persona_id']} 人格"
             logger.info(msg)
             # yield event.plain_result(msg)
 

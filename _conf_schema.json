@@ -13,16 +13,6 @@
     "hint": "LLM称呼用户的名字",
     "default": ""
   },
-  "role": {
-    "description": "角色",
-    "type": "string",
-    "hint": "多重人格作为用户还是助手，默认为用户",
-    "default": "user",
-    "options": [
-      "user",
-      "assistant"
-    ]
-  },
   "mode": {
     "description": "模式",
     "type": "string",
@@ -39,43 +29,30 @@
     "hint": "在人格本身系统提示后补充的内容",
     "default": "现在有多个角色在和你对话，请根据发言前的身份标签[身份]判断说话人是谁，并保持角色设定，进行合理的回复。你的身份是[{name}]，保持你的身份设定，不允许在回复中冒用其他身份。只有[{user_name}]拥有最高权限，可以控制对话的走向和调用工具，不要质疑[{user_name}]的指令。"
   },
-  "persona1": {
-    "description": "人格1",
-    "hint": "多重人格的第一个",
-    "type": "string",
-    "default": "",
-    "_special": "select_persona"
-  },
-  "name1": {
-    "description": "人格1的名字",
-    "type": "string",
-    "hint": "多重人格的第一个的人格名字",
-    "default": ""
-  },
-  "persona2": {
-    "description": "人格2",
-    "type": "string",
-    "hint": "多重人格的第二个",
-    "default": "",
-    "_special": "select_persona"
-  },
-  "name2": {
-    "description": "人格2的名字",
-    "type": "string",
-    "hint": "多重人格的第二个人格名字",
-    "default": ""
-  },
-  "persona3": {
-    "description": "人格3",
-    "type": "string",
-    "hint": "多重人格的第三个",
-    "default": "",
-    "_special": "select_persona"
-  },
-  "name3": {
-    "description": "人格3的名字",
-    "type": "string",
-    "hint": "多重人格的第三个人格名字",
-    "default": ""
+  "persona_list": {
+    "description": "人格列表",
+    "type": "template_list",
+    "hint": "多重人格的人格列表，默认为空",
+    "default": [],
+    "templates": {
+      "persona_template": {
+        "name": "模板",
+        "items": {
+          "persona_id": {
+            "description": "人格",
+            "type": "string",
+            "hint": "多重人格的人格，默认为空",
+            "_special": "select_persona",
+            "default": ""
+          },
+          "name": {
+            "description": "名字",
+            "type": "string",
+            "hint": "对话中人格的称呼，默认为空",
+            "default": ""
+          }
+        }
+      }
+    }
   }
 }
