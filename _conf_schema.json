@@ -16,7 +16,7 @@
   "mode": {
     "description": "模式",
     "type": "string",
-    "hint": "多重人格的切换模式，默认为自动切换",
+    "hint": "多重人格的切换模式，默认为每次对话按顺序切换（switch），也可以设置为手动切换（manual），由用户通过指令控制切换",
     "default": "switch",
     "options": [
       "switch",
@@ -54,5 +54,60 @@
         }
       }
     }
+  },
+  "summary_prompt": {
+    "description": "总结提示",
+    "type": "text",
+    "hint": "总结提示，在使用总结指令时对本轮对话进行总结，默认为空",
+    "default": "现在你是一个“故事总结者”\n\n任务：\n从前面的对话历史中，总结故事情节和人物状态，用于多角色剧情系统的持久化保存。\n\n⚠️ 重要规则（必须遵守）：\n- 只提取“明确出现的信息”，禁止猜测或脑补\n- 不要改写剧情，不要润色\n- 使用简短、稳定、离散的表达（避免长句）\n- 总结内容包括场景地点、出现人物、当前氛围、每个人物的状态（身体状态、心情、衣着等）、人物之间的关系、故事情节概要（故事中发生的各种事件）"
+  },
+  "world_state": {
+    "description": "世界状态",
+    "type": "template_list",
+    "hint": "多重人格的世界状态列表，默认为空",
+    "default": [],
+    "templates": {
+      "state_template": {
+        "name": "状态",
+        "items": {
+          "conversation_id": {
+            "description": "对话ID",
+            "type": "string",
+            "hint": "多重人格的对话ID，默认为空",
+            "default": ""
+          },
+          "state": {
+            "description": "状态",
+            "type": "text",
+            "hint": "多重人格的世界状态，默认为空",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
+  "max_context_length": {
+    "description": "最大历史记录",
+    "type": "int",
+    "hint": "世界状态更新后保留的对话数量，默认为16",
+    "default": 16,
+    "minimum": 2
+  },
+  "state_update_mode": {
+    "description": "状态更新模式",
+    "type": "string",
+    "hint": "世界状态的更新模式，默认为固定对话次数更新（constant）",
+    "default": "constant",
+    "options": [
+      "constant",
+      "manual"
+    ]
+  },
+  "state_update_every": {
+    "description": "状态更新频率",
+    "type": "int",
+    "hint": "世界状态的更新频率，默认为6，表示每6轮对话更新一次状态",
+    "default": 6,
+    "minimum": 1
   }
 }
