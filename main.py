@@ -193,7 +193,9 @@ class MultiPersonaPlugin(Star):
             if msg['role'] == 'assistant':
                 for p in all_prefix:
                     if msg['content'][0]['text'].startswith(p):
-                        extracted_context += msg['content'][0]['text'] + '\n\n'
+                        text: str = msg['content'][0]['text']
+                        text = text.replace('\n\n', '\n')
+                        extracted_context += text + '\n\n'
                         break
             elif msg['role'] == 'user':
                 if msg['content'][0]['text'].startswith(user_prefix):
@@ -201,20 +203,17 @@ class MultiPersonaPlugin(Star):
 
         return extracted_context
 
-    async def _llm_request(self, event: AstrMessageEvent, context: list[dict], provider_id: str, cid: str) -> LLMResponse:
+    async def _actor_request(self, event: AstrMessageEvent, provider_id: str, cid: str) -> LLMResponse:
         """发送 llm 请求的公共方法，添加系统提示和工具等"""
-        # context = context[-self.config['max_context_length']:]  # 截取最近的消息，避免上下文过长导致生成失败
-
-        # context = self._modify_roles(context)
-        # if len(context) > 5:
-        #     logger.info(f"修改role后，当前对话上下文: {context[-5:]}")
-        # else:
-        #     logger.info(f"修改role后，当前对话上下文: {context}")
+        conv = await self.conv_mgr.db.get_conversation_by_id(cid=cid)
+        assert conv is not None and conv.content
+        context: list[dict] = conv.content
 
         # TODO: 改成LLM判断是否需要总结更新世界状态，而不是单纯根据消息记录条数判断
         if len(context) > self.config['max_context_length']+self.config['state_update_every']:
             logger.warning(f"对话上下文过长，当前消息记录条数: {len(context)}，将自动更新世界状态并清理对话历史")
-            await self._context_summary(event, context, provider_id, cid, save=True)
+            context = await self._clear_conversation_history(event.unified_msg_origin, cid)
+            asyncio.create_task(self._context_summary(event, context, provider_id, cid, save=True))
 
         extracted_context = self._extract_context(context)
 
@@ -239,9 +238,11 @@ class MultiPersonaPlugin(Star):
         for ws in self.config["world_state"]:
             if ws["conversation_id"] == cid:
                 additional_prompt += f'\n【世界状态】\n{ws["state"]}'
+                additional_prompt += '\n------\n'
                 break
         additional_prompt += f'\n【对话历史】\n{extracted_context}'
-        additional_prompt += f'\n【你的任务】\n以[{name}]的身份回应对话。'
+        additional_prompt += '\n------\n'
+        additional_prompt += f'\n【你的任务】\n以[{name}]的身份回应对话，禁止原样重复之前的句子，包括动作和心理活动。'
         logger.info(f"使用的附加提示: {additional_prompt}")
 
         llm_resp: LLMResponse = await self.context.tool_loop_agent(
@@ -251,7 +252,7 @@ class MultiPersonaPlugin(Star):
             tools=tools,
             system_prompt=self.persona.system_prompt+dialog_prompt,
             prompt=additional_prompt,
-            max_steps=30,  # Agent 最大执行步骤
+            max_steps=5,  # Agent 最大执行步骤
             tool_call_timeout=60,  # 工具调用超时时间
         )
 
@@ -263,7 +264,13 @@ class MultiPersonaPlugin(Star):
             if isinstance(part, Plain):
                 if not part.text.startswith(prefix):
                     llm_resp.result_chain.chain[i].text = prefix + part.text
-
+        # await self.context.send_message(event.unified_msg_origin, llm_resp.result_chain)
+        assistant_msg = AssistantMessageSegment(content=[TextPart(text=llm_resp.completion_text)])
+        await self.add_message_single(
+            cid=cid,
+            message=assistant_msg,
+        )
+        await self.context.send_message(event.unified_msg_origin, llm_resp.result_chain)  # type: ignore
         return llm_resp
 
     @filter.command("mulper_continue", alias={'mpc', '人格继续'})
@@ -281,21 +288,35 @@ class MultiPersonaPlugin(Star):
         if curr_cid is None:
             # 如果当前没有对话，先创建一个对话
             curr_cid = await self.conv_mgr.new_conversation(umo)
-        conversation = await self.conv_mgr.get_conversation(umo, curr_cid)
-        assert conversation is not None, "当前对话不能为空"
 
-        context = json.loads(conversation.history)
-        llm_resp = await self._llm_request(event, context, provider_id, curr_cid)
-
-        assistant_msg = AssistantMessageSegment(content=[TextPart(text=llm_resp.completion_text)])
-        await self.add_message_single(
-            cid=curr_cid,
-            message=assistant_msg,
-        )
-
-        yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
+        event.stop_event()
+        await self._actor_request(event, provider_id, curr_cid)
+        # yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
         if self.mode == 'switch':
+            old_p = self.p_list[self.active_idx]
+            new_p = await self._switch_persona()
+            msg = f"从 {old_p['persona_id']} 人格自动切换为 {new_p['persona_id']} 人格"
+            logger.info(msg)
+            # yield event.plain_result(msg)
+
+    @filter.command("mulper_loop", alias={'mpl', '人格循环'})
+    async def mulper_loop(self, event: AstrMessageEvent, rounds: int = 2):
+        """让llm按当前上下文连续生成多轮"""
+        umo = event.unified_msg_origin
+        provider_id = await self.context.get_current_chat_provider_id(umo)
+        curr_cid = await self.conv_mgr.get_curr_conversation_id(umo)
+        if curr_cid is None:
+            # 如果当前没有对话，先创建一个对话
+            curr_cid = await self.conv_mgr.new_conversation(umo)
+        event.stop_event()
+        yield event.plain_result(f"开始连续生成{rounds}轮，每轮结束后将自动切换人格")  # type: ignore
+
+        for turn in range(rounds):
+            await self._actor_request(event, provider_id, curr_cid)
+            await asyncio.sleep(2)  # 每轮生成后等待2秒，避免请求过快被限制
+            # yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
+
             old_p = self.p_list[self.active_idx]
             new_p = await self._switch_persona()
             msg = f"从 {old_p['persona_id']} 人格自动切换为 {new_p['persona_id']} 人格"
@@ -320,21 +341,14 @@ class MultiPersonaPlugin(Star):
         if curr_cid is None:
             # 如果当前没有对话，先创建一个对话
             curr_cid = await self.conv_mgr.new_conversation(umo)
-        conversation = await self.conv_mgr.get_conversation(umo, curr_cid)
-        assert conversation is not None, "当前对话不能为空"
-
-        context = json.loads(conversation.history)
-        context.append(user_mgs.model_dump())
-        llm_resp = await self._llm_request(event, context, provider_id, curr_cid)
-
-        assistant_msg = AssistantMessageSegment(content=[TextPart(text=llm_resp.completion_text)])
-        await self.conv_mgr.add_message_pair(
+        await self.add_message_single(
             cid=curr_cid,
-            user_message=user_mgs,
-            assistant_message=assistant_msg,
+            message=user_mgs,
         )
 
-        yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
+        event.stop_event()
+        await self._actor_request(event, provider_id, curr_cid)
+        # yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
         if self.mode == 'switch':
             old_p = self.p_list[self.active_idx]
@@ -342,6 +356,47 @@ class MultiPersonaPlugin(Star):
             msg = f"从 {old_p['persona_id']} 人格自动切换为 {new_p['persona_id']} 人格"
             logger.info(msg)
             # yield event.plain_result(msg)
+
+    async def _state_compress(self, event: AstrMessageEvent,
+                              provider_id: str, cid: str, save: bool) -> LLMResponse | None:
+        """更新并压缩世界状态的公共方法"""
+        world_state = ''
+        for ws in self.config["world_state"]:
+            if ws["conversation_id"] == cid:
+                world_state = ws["state"]
+                break
+        if not world_state:
+            logger.warning(f"对话 {cid} 没有找到对应的世界状态，无法进行更新和压缩")
+            return None
+
+        user_prompt = "MODE: COMPRESS\n\n"
+        user_prompt += f"【世界状态】：\n{world_state}\n\n"
+
+        logger.info(f"使用的系统提示: {self.summary_prompt}")
+        logger.info(f"使用的用户提示: {user_prompt}")
+
+        llm_resp: LLMResponse = await self.context.llm_generate(
+            event=event,
+            chat_provider_id=provider_id,
+            # contexts=context,  # type: ignore
+            system_prompt=self.summary_prompt,
+            prompt=user_prompt,
+        )
+
+        new_state = llm_resp.completion_text
+
+        if save:
+            for i, ws in enumerate(self.config["world_state"]):
+                if ws["conversation_id"] == cid:
+                    self.config["world_state"][i]["state"] = new_state
+                    logger.info(f"对话 {cid} 的世界状态已更新")
+            self.config.save_config()
+
+            summary_log_file = f"conversation_{cid}_summary.txt"
+            with open(f"{self.data_path}/{summary_log_file}", "a", encoding="utf-8") as f:
+                f.write(f"【对话总结】\n{llm_resp.completion_text}\n\n")
+
+        return llm_resp
 
     async def _context_summary(self, event: AstrMessageEvent, context: list[dict],
                                provider_id: str, cid: str, save: bool) -> LLMResponse:
@@ -356,6 +411,7 @@ class MultiPersonaPlugin(Star):
         if world_state:
             user_prompt = "MODE: UPDATE\n\n"
             user_prompt += f"【世界状态】：\n{world_state}\n\n"
+            user_prompt += '\n------\n\n'
             user_prompt += f"【新对话】：\n{extracted_context}"
         else:
             user_prompt = "MODE: EXTRACT\n\n"
@@ -389,22 +445,30 @@ class MultiPersonaPlugin(Star):
                 logger.info(f"对话 {cid} 的世界状态已创建")
             self.config.save_config()
 
-            conv_log_file = f"conversation_{cid}_log.txt"
-            with open(f"{self.data_path}/{conv_log_file}", "a", encoding="utf-8") as f:
-                f.write(f"【对话历史记录】\n{json.dumps(context, ensure_ascii=False)}\n\n")
-
             summary_log_file = f"conversation_{cid}_summary.txt"
             with open(f"{self.data_path}/{summary_log_file}", "a", encoding="utf-8") as f:
                 f.write(f"【对话总结】\n{llm_resp.completion_text}\n\n")
 
-            if len(context) > self.config['max_context_length']:
-                await self.conv_mgr.db.update_conversation(
-                    cid=cid,
-                    content=context[-self.config['max_context_length']:],  # 保留最近的消息，删除较早的消息
-                )
-                logger.info(f"对话 {cid} 历史记录已清理，原对话记录和总结已保存到 {self.data_path} 目录下")
-
         return llm_resp
+
+    async def _clear_conversation_history(self, umo: str, cid: str) -> list[dict]:
+        """清理对话历史，保留对话总结等重要信息"""
+        conversation = await self.conv_mgr.get_conversation(umo, cid)
+        assert conversation is not None, "当前对话不能为空"
+        context = json.loads(conversation.history)
+
+        conv_log_file = f"conversation_{cid}_log.txt"
+        with open(f"{self.data_path}/{conv_log_file}", "a", encoding="utf-8") as f:
+            f.write(f"【对话历史记录】\n{json.dumps(context, ensure_ascii=False)}\n\n")
+
+        if len(context) > self.config['max_context_length']:
+            await self.conv_mgr.db.update_conversation(
+                cid=cid,
+                content=context[-self.config['max_context_length']:],  # 保留最近的消息，删除较早的消息
+            )
+            logger.info(f"对话 {cid} 历史记录已清理，原对话记录和总结已保存到 {self.data_path} 目录下")
+
+        return context[-self.config['max_context_length']:]
 
     @filter.command("mulper_summary", alias={'mpsu', '人格总结'})
     async def mulper_summary(self, event: AstrMessageEvent, save=True, cid: Optional[str] = None):
@@ -437,33 +501,25 @@ class MultiPersonaPlugin(Star):
 
         yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
-        # @filter.command("mulper_delete", alias={'mpd', '人格删除'})
-        # async def mulper_delete(self, event: AstrMessageEvent, cid: Optional[str] = None):
-        #     """删除最新一条对话记录，参数 cid 可选，默认为当前对话"""
-        #     umo = event.unified_msg_origin
-        #     if cid is None:
-        #         curr_cid = await self.conv_mgr.get_curr_conversation_id(umo)
-        #         if curr_cid is None:
-        #             yield event.plain_result("当前没有对话可删除")
-        #             return
-        #         cid = curr_cid
-        #         yield event.plain_result(f"使用当前对话 ID: {cid}")
-        #     else:
-        #         yield event.plain_result(f"使用指定对话 ID: {cid}")
+    @filter.command("mulper_compress", alias={'mpco', '人格压缩'})
+    async def mulper_compress(self, event: AstrMessageEvent, save=True, cid: Optional[str] = None):
+        """查看当前对话上下文信息，参数 cid 可选，默认为当前对话，并对世界状态进行压缩更新"""
+        umo = event.unified_msg_origin
+        provider_id = await self.context.get_current_chat_provider_id(umo)
+        msg = ''
+        if cid is None:
+            curr_cid = await self.conv_mgr.get_curr_conversation_id(umo)
+            if curr_cid is None:
+                # 如果当前没有对话，先创建一个对话
+                curr_cid = await self.conv_mgr.new_conversation(umo)
+            cid = curr_cid
+            msg += f"使用当前对话 ID: {cid}\n"
+        else:
+            msg += f"使用指定对话 ID: {cid}\n"
 
-        #     conversation = await self.conv_mgr.get_conversation(umo, cid)
-        #     assert conversation is not None, "当前对话不能为空"
-        #     context = json.loads(conversation.history)
-        #     if len(context) == 0:
-        #         yield event.plain_result("当前对话没有消息可删除")
-        #         return
+        llm_resp = await self._state_compress(event, provider_id, cid, save=save)
 
-        #     popped_context = context.pop()
-        #     yield event.plain_result(f"已删除最新一条消息: {popped_context}")
-        #     await self.conv_mgr.db.update_conversation(
-        #         cid=cid,
-        #         content=context,
-        #     )
+        yield event.chain_result(llm_resp.result_chain.chain)  # type: ignore
 
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
