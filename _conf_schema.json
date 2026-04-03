@@ -1,12 +1,4 @@
 {
-  "population": {
-    "description": "人口",
-    "type": "int",
-    "hint": "多重人格的人口数量，默认为1，最大为3",
-    "default": 2,
-    "minimum": 2,
-    "maximum": 3
-  },
   "user_name": {
     "description": "用户名字",
     "type": "string",
